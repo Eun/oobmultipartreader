@@ -9,17 +9,21 @@ import (
 	"sort"
 )
 
+// Field is a Multipart Fragment that defines would be written in the response
 type Field struct {
 	Header textproto.MIMEHeader
 	Reader io.Reader
 }
 
+// NextField is a function that returns the next Field
 type NextField func(reader *OOBMultipartReader, field *Field) (err error)
 
+// NoNextFieldError is an error that is triggered as soon as the NextField in OOBMultipartReader is nil
 type NoNextFieldError struct{}
 
 func (NoNextFieldError) Error() string { return "NextField is nil" }
 
+// OOBMultipartReader is a io.Reader that generates a multipart stream out of multiple other readers
 type OOBMultipartReader struct {
 	Boundary      string
 	NextField     NextField
@@ -60,35 +64,12 @@ func (reader *OOBMultipartReader) Read(p []byte) (int, error) {
 			}
 			return 0, err
 		}
-		reader.headerBuffer = &bytes.Buffer{}
-		// write the multipart header
-		if reader.WrittenFields == 0 {
-			fmt.Fprintf(reader.headerBuffer, "--%s\r\n", reader.Boundary)
-		} else {
-			fmt.Fprintf(reader.headerBuffer, "\r\n--%s\r\n", reader.Boundary)
-		}
-		keys := make([]string, 0, len(field.Header))
-		for k := range field.Header {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			for _, v := range field.Header[k] {
-				fmt.Fprintf(reader.headerBuffer, "%s: %s\r\n", k, v)
-			}
-		}
-		fmt.Fprintf(reader.headerBuffer, "\r\n")
+		reader.fillHeaderBuffer(field.Header)
 		reader.currentReader = field.Reader
 	}
 
 	if reader.headerBuffer != nil {
-		n, err := reader.headerBuffer.Read(p)
-		if err == io.EOF {
-			reader.WrittenFields++
-			reader.headerBuffer = nil
-			return n, nil
-		}
-		return n, err
+		return reader.writeHeaderBuffer(p)
 	}
 
 	n, err := reader.currentReader.Read(p)
@@ -103,6 +84,16 @@ func (reader *OOBMultipartReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+func (reader *OOBMultipartReader) writeHeaderBuffer(p []byte) (int, error) {
+	n, err := reader.headerBuffer.Read(p)
+	if err == io.EOF {
+		reader.WrittenFields++
+		reader.headerBuffer = nil
+		return n, nil
+	}
+	return n, err
+}
+
 func (reader *OOBMultipartReader) writeFinalBuffer(p []byte) (int, error) {
 	n, err := reader.finalBuffer.Read(p)
 	if err == io.EOF {
@@ -110,7 +101,27 @@ func (reader *OOBMultipartReader) writeFinalBuffer(p []byte) (int, error) {
 		reader.initialized = false
 	}
 	return n, err
+}
 
+func (reader *OOBMultipartReader) fillHeaderBuffer(header textproto.MIMEHeader) {
+	reader.headerBuffer = &bytes.Buffer{}
+	// write the multipart header
+	if reader.WrittenFields == 0 {
+		fmt.Fprintf(reader.headerBuffer, "--%s\r\n", reader.Boundary)
+	} else {
+		fmt.Fprintf(reader.headerBuffer, "\r\n--%s\r\n", reader.Boundary)
+	}
+	keys := make([]string, 0, len(header))
+	for k := range header {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range header[k] {
+			fmt.Fprintf(reader.headerBuffer, "%s: %s\r\n", k, v)
+		}
+	}
+	fmt.Fprintf(reader.headerBuffer, "\r\n")
 }
 
 func randomBoundary() string {
